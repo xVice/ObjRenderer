@@ -1,25 +1,50 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
-
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.IO;
 using System.Linq;
-
-
+using System.Reflection;
 using System.Windows.Forms;
+using System.Xml.Linq;
 using Assimp;
-using Assimp.Configs;
-using Matrix4x4 = System.Numerics.Matrix4x4;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 
 namespace ObjRenderer
 {
     public class ObjObject
     {
+        float arrowSize = 10f; // Size of the arrowhead
+        float arrowAngle = 20f; // Angle of the arrowhead
+        float arrowLength = 50f; // Length of the arrow
+
+
+        public bool IsSelected
+        {
+            get { return _isSelected; }
+            set { _isSelected = value; }
+        }
+        private bool _isSelected;
+
+        public Mesh Mesh
+        {
+            get { return _mesh; }
+        }
+
+        public Vector3D Position
+        {
+            get { return _position; }
+            set { _position = value; }
+        }
+
         private Mesh _mesh;
         private Vector3D _position;
         private bool _isCulled;
 
         public ObjObject(string objPath, Vector3D position)
         {
+            _isSelected = false;
             _mesh = LoadMesh(objPath);
             _position = position;
             _isCulled = false;
@@ -32,28 +57,28 @@ namespace ObjRenderer
             return scene.Meshes.FirstOrDefault();
         }
 
+        /*
         private Vector3D ComputeFaceNormal(Vector3D v1, Vector3D v2, Vector3D v3)
         {
             var normal = Vector3D.Cross(v2 - v1, v3 - v1);
             normal.Normalize();
             return normal;
         }
-
-        public Bitmap Render(int widht, int height, TextureBrush texturebrush, Vector3D lightPos, Assimp.Matrix4x4 projectionMatrix, Assimp.Matrix4x4 viewMatrix, bool drawWireFrame, bool drawPolygonBoundingBox, bool drawLightingVectors, bool drawShadingOnly, bool drawSolid)
+        */
+        public Bitmap Render(float lightIntensity, int width, int height, TextureBrush texturebrush, Vector3D lightPos, Assimp.Matrix4x4 projectionMatrix, Assimp.Matrix4x4 viewMatrix, bool drawWireFrame, bool drawPolygonBoundingBox, bool drawLightingVectors, bool drawShadingOnly, bool drawSolid, bool enabledExpCulling)
         {
-            var bmp = new Bitmap(widht, height);
+            var bmp = new Bitmap(width, height);
             var graphics = Graphics.FromImage(bmp);
-
 
             if (_isCulled)
                 return null;
-          
+
+            var clientSize = new Size(width, height);
 
             if (_mesh != null)
             {
                 var frustum = new BoundingFrustum(viewMatrix * projectionMatrix);
                 var colors = new List<Color>();
-
 
                 var wireframePoints = new List<PointF>();
                 var boundingBoxRects = new List<RectangleF>();
@@ -64,9 +89,9 @@ namespace ObjRenderer
                     var vert2 = _mesh.Vertices[face.Indices[1]];
                     var vert3 = _mesh.Vertices[face.Indices[2]];
 
-                    var vertex1 = Project(vert1, projectionMatrix, viewMatrix);
-                    var vertex2 = Project(vert2, projectionMatrix, viewMatrix);
-                    var vertex3 = Project(vert3, projectionMatrix, viewMatrix);
+                    var vertex1 = Project(clientSize, vert1, projectionMatrix, viewMatrix);
+                    var vertex2 = Project(clientSize, vert2, projectionMatrix, viewMatrix);
+                    var vertex3 = Project(clientSize, vert3, projectionMatrix, viewMatrix);
 
                     // Apply object position to vertices
                     vertex1.X += _position.X;
@@ -78,8 +103,16 @@ namespace ObjRenderer
 
                     var points = new PointF[] { vertex1, vertex2, vertex3 };
 
-                    //if (!frustum.Intersects(points)) // Perform frustum culling
-                    //    continue;
+                    var faceBoundingBox = ComputeBoundingBox(points);
+
+                    if (enabledExpCulling)
+                    {
+                        if (!frustum.IsBoxVisible(frustum, faceBoundingBox))
+                            continue;
+
+                        if (!IsBackfaceVisible(vert1, vert2, vert3, viewMatrix))
+                            continue;
+                    }
 
                     var normal = ComputeFaceNormal(vert1, vert2, vert3);
                     var lightVectorNorm = lightPos - vert1;
@@ -87,43 +120,44 @@ namespace ObjRenderer
                     var dotProduct = Vector3D.Dot(normal, lightVectorNorm);
 
                     // Calculate the shade of gray based on the dot product
-                    var shade = (int)(dotProduct * 125) + 125;
-                    var color = Color.FromArgb(shade, shade, shade, shade);
+                    var shade = (int)((dotProduct * lightIntensity) + lightIntensity);
+                    var color = Color.FromArgb((int)shade, (int)shade, (int)shade, (int)shade);
 
                     var brush = new SolidBrush(color);
+                    var path = new GraphicsPath();
+                    path.AddPolygon(points);
+
                     if (!drawShadingOnly && !drawSolid)
                     {
-                        graphics.FillPolygon(texturebrush, points);
-                        graphics.FillPolygon(brush, points);
+                        graphics.FillPath(texturebrush, path);
+                        graphics.FillPath(brush, path);
                     }
                     else if (drawSolid)
                     {
-                        graphics.FillPolygon(Brushes.White, points);
-                        graphics.FillPolygon(brush, points);
-                   
+                        graphics.FillPath(Brushes.Gray, path);
+                        graphics.FillPath(brush, path);
                     }
                     else if (drawShadingOnly)
                     {
-                 
-                        graphics.FillPolygon(brush, points);
-                     
+                        graphics.FillPath(brush, path);
                     }
-    
-
-                    brush.Dispose();
-          
-
-      
 
                     if (drawWireFrame)
                     {
-                        wireframePoints.Add(vertex1);
-                        wireframePoints.Add(vertex2);
-                        wireframePoints.Add(vertex3);
-                   
-                
+                        graphics.DrawPath(Pens.DarkRed, path);
+                    }
+
+                    if (_isSelected)
+                    {
+                        graphics.DrawPath(Pens.Black, path);
+                        //  graphics.DrawLine();
 
                     }
+
+                    brush.Dispose();
+                    path.Dispose();
+
+                
 
                     if (drawPolygonBoundingBox)
                     {
@@ -145,30 +179,51 @@ namespace ObjRenderer
                     }
                 }
 
-
-                if (drawWireFrame)
-                {
-                    graphics.DrawLines(Pens.Cyan, wireframePoints.ToArray());
-                }
-
                 if (drawPolygonBoundingBox)
                 {
                     graphics.DrawRectangles(Pens.Green, boundingBoxRects.ToArray());
                 }
             }
+
             return bmp;
         }
 
-        private PointF Project(Vector3D vertex, Assimp.Matrix4x4 projectionMatrix, Assimp.Matrix4x4 viewMatrix)
+
+
+        private RectangleF ComputeBoundingBox(PointF[] points)
         {
-            var _viewer = Application.OpenForms.Cast<ObjViewerForm>().FirstOrDefault(form => form.Name == "ObjViewerForm");
+            var minX = points.Min(p => p.X);
+            var maxX = points.Max(p => p.X);
+            var minY = points.Min(p => p.Y);
+            var maxY = points.Max(p => p.Y);
+            return new RectangleF(minX, minY, maxX - minX, maxY - minY);
+        }
+        private bool IsBackfaceVisible(Vector3D v1, Vector3D v2, Vector3D v3, Assimp.Matrix4x4 viewMatrix)
+        {
+            var normal = ComputeFaceNormal(v1, v2, v3);
+            var viewDirection = new Vector3D(-viewMatrix.A3, -viewMatrix.B3, -viewMatrix.C3); // Invert view direction
+            return Vector3D.Dot(normal, viewDirection) > 0; // Use > 0 for backface culling
+        }
+
+
+        private Vector3D ComputeFaceNormal(Vector3D v1, Vector3D v2, Vector3D v3)
+        {
+            var edge1 = v2 - v1;
+            var edge2 = v3 - v1;
+            var retVec = Vector3D.Cross(edge1, edge2);
+            retVec.Normalize();
+            return retVec;
+          
+        }
+        public static PointF Project(Size vClientS, Vector3D vertex, Assimp.Matrix4x4 projectionMatrix, Assimp.Matrix4x4 viewMatrix)
+        {
             // Apply transformations to the vertex
             var transformedVertex = viewMatrix * vertex;
             transformedVertex = projectionMatrix * transformedVertex;
 
             // Normalize the vertex coordinates and map them to screen space
-            float x = transformedVertex.X * _viewer.ClientSize.Width / 2 + _viewer.ClientSize.Width / 2;
-            float y = -transformedVertex.Y * _viewer.ClientSize.Height / 2 + _viewer.ClientSize.Height / 2;
+            float x = transformedVertex.X * vClientS.Width / 2 + vClientS.Width / 2;
+            float y = -transformedVertex.Y * vClientS.Height / 2 + vClientS.Height / 2;
 
             return new PointF(x, y);
         }
@@ -184,6 +239,20 @@ namespace ObjRenderer
         {
             _matrix = matrix;
             _planes = ExtractPlanes(matrix);
+        }
+
+
+        public bool IsBoxVisible(BoundingFrustum frustum, RectangleF boundingBox)
+        {
+            var boxPoints = new PointF[]
+            {
+        new PointF(boundingBox.Left, boundingBox.Top),
+        new PointF(boundingBox.Right, boundingBox.Top),
+        new PointF(boundingBox.Left, boundingBox.Bottom),
+        new PointF(boundingBox.Right, boundingBox.Bottom)
+            };
+
+            return frustum.Intersects(boxPoints);
         }
 
 
@@ -271,7 +340,7 @@ namespace ObjRenderer
     }
 
 
-    public class ObjViewerForm : Form
+    public class ObjViewerControl : Form
     {
         private bool _needsRendering;
         private Timer _timer;
@@ -280,8 +349,14 @@ namespace ObjRenderer
         private Vector3D _cameraPosition;
         private float _cameraRotationX;
         private float _cameraRotationY;
+
+        private Assimp.Matrix4x4 projectionMatrix;
+        private Assimp.Matrix4x4 viewMatrix;
+
+        private ObjObject selectedObj;
+        private float _lightIntesity;
         private float _cameraMoveSpeed;
-        private const float CameraRotationSpeed = 0.00001f;
+        private const float CameraRotationSpeed = 0.001f;
         private float _cameraZoom;
         private bool drawWireFrame = false;
         private bool drawPolygonBoundingBox;
@@ -289,28 +364,34 @@ namespace ObjRenderer
         private float CameraZoomSpeed = 0.0001f;
         private bool drawSolid = false;
         private bool drawShadingOnly = false;
-        private Vector3D _lastCamPos;
         private Vector3D LightPosition { get; set; }
         private List<ObjObject> _objects;
         private TextureBrush textureBrush;
+        private Point _lastMousePosition;
+        private bool enableCulling = false;
 
-        public ObjViewerForm(List<ObjObject> objects)
+
+     
+
+        public ObjViewerControl(List<ObjObject> objects)
         {
             var textureImage = Image.FromFile("./text.jpg");
 
+            AllowDrop = true;
             DoubleBuffered = true;
             // Create a texture brush from the texture image
             textureBrush = new TextureBrush(textureImage);
 
             Name = "ObjViewerForm";
-   
+
+            _lightIntesity = 100.0f;
             _cameraZoom = 1.0f;
-            LightPosition = new Vector3D(5, 5, 5);
+            LightPosition = new Vector3D(0, 300, 0);
             drawPolygonBoundingBox = false;
             _cameraPosition = new Vector3D(0, 0, 0);
-            _lastCamPos = _cameraPosition;
             _cameraRotationX = 0f;
             _cameraRotationY = 0f;
+     
             _cameraMoveSpeed = 0.1f;
             _needsRendering = true;
             _timer = new Timer();
@@ -328,17 +409,127 @@ namespace ObjRenderer
 
             // Set up event handlers
             this.MouseMove += ObjViewerForm_MouseMove;
+            this.MouseUp += ObjViewerForm_MouseUp;
             this.KeyDown += ObjViewerForm_KeyDown;
             this.KeyUp += ObjViewerForm_KeyUp;
             this.MouseWheel += ObjViewerForm_MouseWheel;
+            this.DragEnter += ObjViewerForm_DragEnter;
+            this.DragDrop += ObjViewerForm_DragDrop;
+            this.MouseDown += ObjViewerForm_MouseDown;
 
             // Create ObjObject instances for each mesh in the scene
         }
+
+        private void ObjViewerForm_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                // Iterate through the objects and check if the click falls inside their mesh
+                foreach (var obj in _objects)
+                {
+                    if (IsPointInsideMesh(obj, e.Location))
+                    {
+                        obj.IsSelected = !obj.IsSelected;
+                        break; // Exit the loop after the first object is clicked
+                    }
+                    else
+                    {
+                        obj.IsSelected = false;
+                     
+                   
+                    }
+                }
+
+                _needsRendering = true;
+            }
+        }
+
+        public static bool IsPointInPolygon(PointF[] polygon, PointF point)
+        {
+            GraphicsPath path = new GraphicsPath();
+            path.AddPolygon(polygon);
+
+            Region region = new Region(path);
+
+            return region.IsVisible(point);
+        }
+
+        private bool IsPointInsideMesh(ObjObject obj, Point point)
+        {
+            if (obj == null || obj.Mesh == null)
+                return false;
+            var mesh = obj.Mesh;
+
+            foreach (var face in mesh.Faces)
+            {
+                var vert1 = mesh.Vertices[face.Indices[0]];
+                var vert2 = mesh.Vertices[face.Indices[1]];
+                var vert3 = mesh.Vertices[face.Indices[2]];
+
+                // Apply object position to vertices
+                vert1 += obj.Position;
+                vert2 += obj.Position;
+                vert3 += obj.Position;
+
+                var points = new PointF[] { ObjObject.Project(ClientSize, vert1, projectionMatrix, viewMatrix),
+                                            ObjObject.Project(ClientSize, vert2, projectionMatrix, viewMatrix),
+                                            ObjObject.Project(ClientSize, vert3, projectionMatrix, viewMatrix) };
+
+                if(IsPointInPolygon(points, point))
+                {
+                    return true;
+                }
+
+            
+              
+ 
+               
+            }
+            return false;
+        }
+
+
+        private void ObjViewerForm_DragEnter(object sender, DragEventArgs e)
+        {
+            // Check if the data being dragged contains file paths
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+                e.Effect = DragDropEffects.Copy; // Allow the drop
+            else
+                e.Effect = DragDropEffects.None; // Disallow the drop
+        }
+
+        public void ObjViewerForm_DragDrop(object sender, DragEventArgs e)
+        {
+            // Get the dragged text from the data
+            string[] filePaths = (string[])e.Data.GetData(DataFormats.FileDrop);
+
+            foreach(var path in filePaths)
+            {
+                LoadObject(new ObjObject(path, new Vector3D(0, 0, 0)));
+            }
+            _needsRendering = true;
+        }
+
+
+        public void LoadObject(ObjObject obj)
+        {
+            _objects.Add(obj);
+        }
+
+ 
 
         public void ObjViewerForm_MouseWheel(object sender, MouseEventArgs e)
         {
             _cameraZoom += e.Delta * CameraZoomSpeed;
             _needsRendering = true;
+        }
+
+        public void ObjViewerForm_MouseUp(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                Cursor.Show();
+            }
         }
 
         public class BoundingBox
@@ -358,6 +549,10 @@ namespace ObjRenderer
             // Update camera movement based on key releases
             switch (e.KeyCode)
             {
+                case Keys.X:
+                    enableCulling = !enableCulling;
+                    _needsRendering = true;
+                    break;
                 case Keys.C:
                     drawWireFrame = !drawWireFrame;
                     _needsRendering = true;
@@ -387,31 +582,32 @@ namespace ObjRenderer
 
         private void ObjViewerForm_KeyDown(object sender, KeyEventArgs e)
         {
-            // Update camera movement based on key presses
+
+            
+
             switch (e.KeyCode)
             {
-                case Keys.Left:
-                case Keys.A:
-                    MoveCamera(-_cameraMoveSpeed, 0f, 0);
-                    break;
-                case Keys.Right:
-                case Keys.D:
-                    MoveCamera(_cameraMoveSpeed, 0f, 0);
-                    break;
-                case Keys.Up:
                 case Keys.W:
-                    // Reduce the camera's zoom level
-                    MoveCamera(0f, -_cameraMoveSpeed, 0);
-
+                    MoveCamera(0, 0, -_cameraMoveSpeed);
                     break;
-                case Keys.Down:
                 case Keys.S:
-                    // Reduce the camera's zoom level
-                    MoveCamera(0f, _cameraMoveSpeed, 0);
+                    MoveCamera(0, 0, _cameraMoveSpeed);
                     break;
-
+                case Keys.A:
+                    MoveCamera(-_cameraMoveSpeed, 0, 0);
+                    break;
+                case Keys.D:
+                    MoveCamera(_cameraMoveSpeed, 0, 0);
+                    break;
+                case Keys.Space:
+                    MoveCamera(0, _cameraMoveSpeed, 0);
+                    break;
+                case Keys.ControlKey:
+                    MoveCamera(0, -_cameraMoveSpeed, 0);
+                    break;
             }
         }
+    
 
         private void ExecuteCommand(string command)
         {
@@ -432,6 +628,14 @@ namespace ObjRenderer
                             Console.WriteLine($"{LightPosition.ToString()}");
                             break;
                     }
+                    break;
+                case "setobjpos":
+
+             
+
+                    _objects.Where(x => x.IsSelected).FirstOrDefault().Position = new Vector3D(float.Parse(parts[1]), float.Parse(parts[2]), float.Parse(parts[3]));
+               
+              
                     break;
                 case "light":
                     LightPosition = new Vector3D(int.Parse(parts[1]), int.Parse(parts[2]), int.Parse(parts[3]));
@@ -473,22 +677,68 @@ namespace ObjRenderer
         private void ObjViewerForm_MouseMove(object sender, MouseEventArgs e)
         {
             // Update the camera rotation based on mouse movement while left button is pressed
-            if (e.Button == MouseButtons.Left)
+            if (ClientRectangle.Contains(e.Location))
             {
-                _cameraRotationX += CameraRotationSpeed * e.X;
-                _cameraRotationY += CameraRotationSpeed * e.Y;
-                _needsRendering = true;
+                if (Control.MouseButtons.HasFlag(MouseButtons.Left))
+                {
+                    float deltaX = e.X - ClientSize.Width / 2f;
+                    float deltaY = e.Y - ClientSize.Height / 2f;
+    
+
+                    _cameraRotationX += deltaX * CameraRotationSpeed;
+                    _cameraRotationY += deltaY * CameraRotationSpeed;
+        
+
+                    // Reset the cursor position to the center of the frame
+                    Control mouseControl = FindForm() ?? (Control)this;
+                    Point centerPoint = mouseControl.PointToScreen(new Point(ClientSize.Width / 2, ClientSize.Height / 2));
+                    Cursor.Position = centerPoint;
+
+                    _needsRendering = true;
+                }
             }
         }
+    
 
         private void MoveCamera(float offsetX, float offsetY, float offsetZ)
         {
             Vector3D moveVector = new Vector3D(offsetX, offsetY, offsetZ);
 
+            // Convert the move vector from world space to camera space
+            Assimp.Matrix4x4 rotationMatrix = Assimp.Matrix4x4.FromEulerAnglesXYZ(_cameraRotationX, _cameraRotationY, 0);
+            moveVector = MultiplyVectorByMatrix(moveVector, rotationMatrix);
 
             _cameraPosition += moveVector;
             _needsRendering = true;
         }
+
+        private Vector3D MultiplyVectorByMatrix(Vector3D vector, Assimp.Matrix4x4 matrix)
+        {
+            float x = (float)(vector.X * matrix.A1 + vector.Y * matrix.B1 + vector.Z * matrix.C1 + matrix.D1);
+            float y = (float)(vector.X * matrix.A2 + vector.Y * matrix.B2 + vector.Z * matrix.C2 + matrix.D2);
+            float z = (float)(vector.X * matrix.A3 + vector.Y * matrix.B3 + vector.Z * matrix.C3 + matrix.D3);
+
+            return new Vector3D(x, y, z);
+        }
+
+        private Assimp.Matrix4x4 ComputeProjectionMatrix(float aspectRatio, float nearPlane, float farPlane)
+        {
+            float fov = MathHelper.ToRadians(60); // Example FOV of 60 degrees
+
+            float scale = 1.0f / (float)Math.Tan(fov * 0.5f);
+
+            Assimp.Matrix4x4 projectionMatrix = new Assimp.Matrix4x4
+            {
+                A1 = scale / aspectRatio,
+                B2 = scale,
+                C3 = -(farPlane + nearPlane) / (farPlane - nearPlane),
+                C4 = -2.0f * farPlane * nearPlane / (farPlane - nearPlane),
+                D3 = -1.0f
+            };
+
+            return projectionMatrix;
+        }
+
 
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -496,25 +746,15 @@ namespace ObjRenderer
 
             if (_objects != null && _objects.Any())
             {
-                // Calculate the aspect ratio based on the client size
+                float fov = MathHelper.ToRadians(60); // Example FOV of 60 degrees
                 float aspectRatio = (float)ClientSize.Width / ClientSize.Height;
-                float left = -5 * aspectRatio;
-                float right = 5 * aspectRatio;
-                float bottom = -5;
-                float top = 5;
-                float near = 0.1f;
-                float far = 100000.0f;
+                float nearPlane = 0.1f;
+                float farPlane = 100000.0f;
 
-                // Set up the projection matrix as orthographic
-                Assimp.Matrix4x4 projectionMatrix = new Assimp.Matrix4x4(
-                    2 / (right - left), 0, 0, -(right + left) / (right - left),
-                    0, 2 / (top - bottom), 0, -(top + bottom) / (top - bottom),
-                    0, 0, -2 / (far - near), -(far + near) / (far - near),
-                    0, 0, 0, 1
-                );
+                projectionMatrix = ComputeProjectionMatrix(aspectRatio, nearPlane, farPlane);
 
                 // Calculate the view matrix based on camera position and rotations
-                var viewMatrix = Assimp.Matrix4x4.FromTranslation(_cameraPosition) *
+                viewMatrix = Assimp.Matrix4x4.FromTranslation(_cameraPosition) *
                                  Assimp.Matrix4x4.FromRotationX(_cameraRotationX) *
                                  Assimp.Matrix4x4.FromRotationY(_cameraRotationY);
                                
@@ -552,14 +792,16 @@ namespace ObjRenderer
                 // Render each object in the scene
                 foreach (var obj in _objects)
                 {
-                     bmps.Add(obj.Render(ClientSize.Width, ClientSize.Height,textureBrush, LightPosition, projectionMatrix, viewMatrix, drawWireFrame, drawPolygonBoundingBox, drawLightingVectors, drawShadingOnly, drawSolid));
+                     bmps.Add(obj.Render(_lightIntesity, ClientSize.Width, ClientSize.Height,textureBrush, LightPosition, projectionMatrix, viewMatrix, drawWireFrame, drawPolygonBoundingBox, drawLightingVectors, drawShadingOnly, drawSolid, enableCulling));
                 }
+             
                 foreach(var bmp in bmps)
                 {
                     e.Graphics.DrawImage(bmp, new PointF(0, 0));
                 }
-
+          
             }
+              
         }
 
 
@@ -581,26 +823,6 @@ namespace ObjRenderer
         public static float ToDegrees(float radians)
         {
             return radians * 180.0f / Pi;
-        }
-    }
-
-
-
-
-    public class Program
-    {
-        [STAThread]
-        public static void Main()
-        {
-            List<ObjObject> objects = new List<ObjObject>();
-
-            // Create ObjObject instances and add them to the list
-            //objects.Add(new ObjObject("./DocBrown.obj", new Vector3(0, 0, 0)));
-            objects.Add(new ObjObject("./teapot.obj", new Vector3D(0, 0, 0)));
-            //objects.Add(new ObjObject("./teapot.obj", new Vector3D(-375, 0, 0)));
-
-
-            Application.Run(new ObjViewerForm(objects));
         }
     }
 }
