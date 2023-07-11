@@ -9,6 +9,7 @@ using System.Reflection;
 using System.Windows.Forms;
 using System.Xml.Linq;
 using Assimp;
+using ScriptableGUI;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 
 namespace ObjRenderer
@@ -369,9 +370,9 @@ namespace ObjRenderer
         private TextureBrush textureBrush;
         private Point _lastMousePosition;
         private bool enableCulling = false;
+        private GUI gui = new GUI();
 
 
-     
 
         public ObjViewerControl(List<ObjObject> objects)
         {
@@ -392,7 +393,7 @@ namespace ObjRenderer
             _cameraRotationX = 0f;
             _cameraRotationY = 0f;
      
-            _cameraMoveSpeed = 0.1f;
+            _cameraMoveSpeed = 0.03f;
             _needsRendering = true;
             _timer = new Timer();
             _objects = objects;
@@ -530,6 +531,8 @@ namespace ObjRenderer
             {
                 Cursor.Show();
             }
+
+            gui.SendClick(Cursor.Position);
         }
 
         public class BoundingBox
@@ -588,22 +591,24 @@ namespace ObjRenderer
             switch (e.KeyCode)
             {
                 case Keys.W:
-                    MoveCamera(0, 0, -_cameraMoveSpeed);
+                    _cameraZoom += _cameraMoveSpeed / 5;
+                    _needsRendering = true;
                     break;
                 case Keys.S:
-                    MoveCamera(0, 0, _cameraMoveSpeed);
+                    _cameraZoom += -_cameraMoveSpeed / 5;
+                    _needsRendering = true;
                     break;
                 case Keys.A:
-                    MoveCamera(-_cameraMoveSpeed, 0, 0);
-                    break;
-                case Keys.D:
                     MoveCamera(_cameraMoveSpeed, 0, 0);
                     break;
+                case Keys.D:
+                    MoveCamera(-_cameraMoveSpeed, 0, 0);
+                    break;
                 case Keys.Space:
-                    MoveCamera(0, _cameraMoveSpeed, 0);
+                    MoveCamera(0, -_cameraMoveSpeed, 0);
                     break;
                 case Keys.ControlKey:
-                    MoveCamera(0, -_cameraMoveSpeed, 0);
+                    MoveCamera(0, _cameraMoveSpeed, 0);
                     break;
             }
         }
@@ -786,7 +791,7 @@ namespace ObjRenderer
 
 
                 // Clear the buffer
-                e.Graphics.Clear(Color.FromArgb(30,30,30));
+                e.Graphics.Clear(Color.Black);
 
                 var bmps = new List<Bitmap>();
                 // Render each object in the scene
@@ -799,7 +804,40 @@ namespace ObjRenderer
                 {
                     e.Graphics.DrawImage(bmp, new PointF(0, 0));
                 }
-          
+
+     
+
+                GUIWindow window = new GUIWindow
+                {
+                    Bounds = new Rectangle(50, 50, 300, 200),
+                    Title = "Window",
+                    Visible = true
+                };
+
+                GUIButton button = new GUIButton
+                {
+                    Bounds = new Rectangle(20, 40, 100, 30),
+                    Text = "Click me",
+                    Visible = true
+                };
+                button.ButtonClicked += () => Console.WriteLine("Button clicked!");
+
+                GUITextBox textBox = new GUITextBox
+                {
+                    Bounds = new Rectangle(20, 80, 200, 30),
+                    Text = "Type here",
+                    Visible = true
+                };
+
+                window.AddElement(button);
+                window.AddElement(textBox);
+
+                gui.AddWindow(window);
+
+                Bitmap renderedBitmap = gui.Render(ClientSize.Width, ClientSize.Height);
+                e.Graphics.DrawImage(renderedBitmap, new PointF(0, 0));
+                renderedBitmap.Dispose();
+
             }
               
         }
@@ -823,6 +861,176 @@ namespace ObjRenderer
         public static float ToDegrees(float radians)
         {
             return radians * 180.0f / Pi;
+        }
+    }
+}
+
+namespace ScriptableGUI
+{
+    public class Style
+    {
+        public Color BackgroundColor { get; set; }
+        public Color TextColor { get; set; }
+        public Color ButtonColor { get; set; }
+        public Color WindowBackgroundColor { get; set; }
+        public Color WindowTopBarColor { get; set; }
+        public Font Font { get; set; }
+
+        public Style()
+        {
+            BackgroundColor = Color.Transparent;
+            TextColor = Color.White;
+            ButtonColor = Color.FromArgb(63, 63, 70);
+            WindowBackgroundColor = Color.FromArgb(60, 60, 60);
+            WindowTopBarColor = Color.FromArgb(90, 90, 150);
+            Font = SystemFonts.DefaultFont;
+        }
+    }
+
+    public class GUI
+    {
+        private List<GUIWindow> windows;
+        public Style Style { get; set; }
+
+        public GUI()
+        {
+            windows = new List<GUIWindow>();
+            Style = new Style();
+        }
+
+        public void AddWindow(GUIWindow window)
+        {
+            windows.Add(window);
+        }
+
+        public void SendClick(Point point)
+        {
+            foreach(var window in windows)
+            {
+                foreach(var control in window.GetElements())
+                {
+                    control.HandleClick(point);
+                }
+            }
+        }
+
+        public Bitmap Render(int width, int height)
+        {
+            Bitmap bitmap = new Bitmap(width, height);
+            using (Graphics g = Graphics.FromImage(bitmap))
+            {
+                g.Clear(Style.BackgroundColor);
+
+                foreach (GUIWindow window in windows)
+                {
+                    window.Render(g, Style);
+                }
+            }
+            
+            return bitmap;
+        }
+    }
+
+    public abstract class GUIElement
+    {
+        public Rectangle Bounds { get; set; }
+        public bool Visible { get; set; }
+
+        public abstract void Render(Graphics g, Style style);
+
+        public abstract void HandleClick(Point point);
+    }
+
+    public class GUIButton : GUIElement
+    {
+        public string Text { get; set; }
+
+        public event Action ButtonClicked;
+
+        public override void Render(Graphics g, Style style)
+        {
+            if (!Visible)
+                return;
+
+            g.FillRectangle(new SolidBrush(style.ButtonColor), Bounds);
+            g.DrawString(Text, style.Font, new SolidBrush(style.TextColor), Bounds.X + 10, Bounds.Y + 10);
+        }
+
+        public override void HandleClick(Point point)
+        {
+            if (Bounds.Contains(point))
+                ButtonClicked?.Invoke();
+        }
+    }
+
+    public class GUITextBox : GUIElement
+    {
+        public string Text { get; set; }
+
+        public override void Render(Graphics g, Style style)
+        {
+            if (!Visible)
+                return;
+
+            g.FillRectangle(Brushes.White, Bounds);
+            g.DrawRectangle(Pens.Black, Bounds);
+            g.DrawString(Text, style.Font, Brushes.Black, Bounds.X + 10, Bounds.Y + 10);
+        }
+
+        public override void HandleClick(Point point)
+        {
+            // Textbox does not handle click events
+        }
+    }
+
+    public class GUIWindow : GUIElement
+    {
+        public string Title { get; set; }
+        private List<GUIElement> elements;
+
+        public GUIWindow()
+        {
+            elements = new List<GUIElement>();
+        }
+
+        public void AddElement(GUIElement element)
+        {
+            elements.Add(element);
+        }
+
+        public List<GUIElement> GetElements()
+        {
+            return elements;
+        }
+
+        public override void Render(Graphics g, Style style)
+        {
+            if (!Visible)
+                return;
+
+            g.FillRectangle(new SolidBrush(style.WindowBackgroundColor), Bounds);
+            g.FillRectangle(new SolidBrush(style.WindowTopBarColor), Bounds.X, Bounds.Y, Bounds.Width, 20);
+            g.DrawString(Title, style.Font, new SolidBrush(style.TextColor), Bounds.X + 10, Bounds.Y + 2);
+
+            foreach (GUIElement element in elements)
+            {
+                // Offset the rendering coordinates by the window's position
+                GraphicsState state = g.Save();
+                g.TranslateTransform(Bounds.X, Bounds.Y);
+                element.Render(g, style);
+                g.Restore(state);
+            }
+        }
+
+
+        public override void HandleClick(Point point)
+        {
+            foreach (GUIElement element in elements)
+            {
+                Point elementPoint = new Point(point.X - Bounds.X, point.Y - Bounds.Y);
+                if (element.Bounds.Contains(elementPoint))
+                    element.HandleClick(elementPoint);
+            }
         }
     }
 }
